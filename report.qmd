@@ -1,0 +1,504 @@
+---
+title: "Student Performance Analysis"
+subtitle: "Linear Models Project - M1 MIDO, 2025-2026"
+author:
+  - name: "Hanna Malet & Emma Zouari"
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    self-contained: true
+    code-fold: show
+    code-tools: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+set.seed(42)
+options(scipen = 999, digits = 5)
+
+library(tidyverse)
+library(broom)
+library(lmtest)
+library(performance)
+```
+
+# Introduction
+
+Student academic performance is influenced by multiple factors including individual characteristics, learning environment, study habits, and health-related variables. Understanding how these factors relate to exam outcomes is valuable for educational interventions and student support systems.
+
+This project analyzes a dataset of 5,000 students to identify key predictors of exam performance using multiple linear regression. The objective is to construct a parsimonious and interpretable model that explains substantial variance in exam scores, evaluate its predictive performance on held-out data, and provide actionable insights for students and educators.
+
+# Methods
+
+## Data Import and Preparation
+
+```{r}
+# Data import
+data <- read_csv("project.csv", show_col_types = FALSE)
+
+glimpse(data)
+dim(data)
+```
+
+### Quality Checks
+
+```{r}
+# Missing values and duplicates
+colSums(is.na(data))
+sum(duplicated(data))
+```
+
+No missing values or duplicates detected.
+
+### Variable Encoding
+
+```{r}
+data <- data |>
+  mutate(
+    sexe = factor(sexe, levels = c(0, 1)),
+    school_type = factor(school_type, levels = c(0, 1)),
+    parent_educ = factor(parent_educ, levels = 1:6, ordered = TRUE),
+    agecat = factor(agecat, levels = 1:5, ordered = TRUE),
+    attend_pct_cat = factor(attend_pct_cat, levels = 1:4, ordered = TRUE),
+    sleep_qual = factor(sleep_qual, levels = 1:5, ordered = TRUE),
+    study_method = factor(study_method, levels = 1:6),
+    web_access = factor(web_access, levels = c(0, 1)),
+    extra_act = factor(extra_act, levels = c(0, 1)),
+    trav_time = factor(trav_time, levels = 1:4)
+  )
+
+str(data)
+```
+
+Reference categories: 0 for binary variables, level 1 for multi-level factors. Ordered factors used for variables with natural ordering (parent_educ, sleep_qual, agecat, attend_pct_cat).
+
+### Train/Test Split
+
+```{r}
+set.seed(42)
+
+n <- nrow(data)
+test_size <- 1000
+id_test <- sample(seq_len(n), size = test_size, replace = FALSE)
+
+test <- data[id_test, ]
+train <- data[-id_test, ]
+
+dim(train)
+dim(test)
+```
+
+All subsequent analysis uses only the training data to avoid data leakage.
+
+## Baseline Model
+
+```{r}
+y_mean <- mean(train$y)
+pred_baseline <- rep(y_mean, nrow(test))
+
+mse_baseline <- mean((test$y - pred_baseline)^2)
+medae_baseline <- median(abs(test$y - pred_baseline))
+r2_baseline <- 1 - sum((test$y - pred_baseline)^2) / sum((test$y - mean(test$y))^2)
+
+baseline_metrics <- data.frame(
+  model = "baseline_mean",
+  mse = mse_baseline,
+  medAE = medae_baseline,
+  r2 = r2_baseline
+)
+
+baseline_metrics
+```
+
+# Exploratory Data Analysis
+
+## Distribution of Exam Scores
+
+```{r}
+#| fig-height: 5
+
+ggplot(train, aes(x = y)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey80", color = "black") +
+  geom_density(color = "blue", linewidth = 1) +
+  labs(title = "Distribution of exam scores", x = "Exam score", y = "Density") +
+  theme_bw(base_size = 14)
+```
+
+The distribution is approximately symmetric with slight right skew.
+
+## Exam Score vs Quantitative Predictors
+
+```{r}
+#| fig-height: 5
+
+# Study hours
+ggplot(train, aes(x = study_hrs, y = y)) +
+  geom_point(alpha = 0.3, shape = 21, size = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Exam score vs Study hours", 
+       x = "Study hours per week", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+
+# Attendance
+ggplot(train, aes(x = attend_pct, y = y)) +
+  geom_point(alpha = 0.3, shape = 21, size = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Exam score vs Attendance", 
+       x = "Attendance percentage", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+
+# Sleep hours
+ggplot(train, aes(x = sleep_hrs, y = y)) +
+  geom_point(alpha = 0.3, shape = 21, size = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Exam score vs Sleep hours", 
+       x = "Sleep hours per night", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+```
+
+## Exam Score vs Categorical Predictors
+
+```{r}
+#| fig-height: 5
+
+# Parental education
+ggplot(train, aes(x = parent_educ, y = y)) +
+  geom_boxplot(fill = "grey80") +
+  labs(title = "Exam score vs Parental education", 
+       x = "Parental education level", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+
+# Study method
+ggplot(train, aes(x = study_method, y = y)) +
+  geom_boxplot(fill = "grey80") +
+  labs(title = "Exam score vs Study method", 
+       x = "Study method", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+
+# Sleep quality
+ggplot(train, aes(x = sleep_qual, y = y)) +
+  geom_boxplot(fill = "grey80") +
+  labs(title = "Exam score vs Sleep quality", 
+       x = "Sleep quality", 
+       y = "Exam score") +
+  theme_bw(base_size = 14)
+```
+
+## Key Findings from EDA
+
+Based on the exploratory analysis:
+
+1. Study hours show a strong positive linear relationship with exam scores
+2. Attendance shows a positive , approximately linear association
+3. Sleep hours show a weaker but positive association with exam scores
+4. Parental education shows a clear monotone increasing trend across ordered levels
+5. Study method shows variability in exam performance across categories
+6. Sleep quality shows a positive monotone trend across ordered levels
+
+Variables with weaker associations (age, gender, travel time, school type, web access, extra_act) are excluded for parsimony but will be checked in diagnostics.
+
+
+# Model Building
+
+## Candidate Models
+
+```{r}
+# Model 1: Simple model with study hours only
+m1 <- lm(y ~ study_hrs, data = train)
+
+# Model 2: Core quantitative predictors
+m2 <- lm(y ~ study_hrs + attend_pct + sleep_hrs, data = train)
+
+# Model 3: Full model with categorical variables
+m3 <- lm(y ~ study_hrs + attend_pct + sleep_hrs + parent_educ + study_method + sleep_qual, data = train)
+
+summary(m1)
+summary(m2)
+summary(m3)
+```
+
+## Model Comparison
+
+### Criterion 1: Selection Metrics
+
+```{r}
+model_comparison <- compare_performance(
+  m1, m2, m3,
+  metrics = c("AIC", "BIC", "R2", "R2_adj", "SIGMA", "RMSE"),
+  rank = TRUE
+)
+
+model_comparison
+```
+
+M3 has the lowest AIC/BIC and highest adjusted R².
+
+### Criterion 2: Nested F-tests
+
+```{r}
+# M1 vs M2
+anova(m1, m2)
+
+# M2 vs M3
+anova(m2, m3)
+
+# M1 vs M3
+anova(m1, m3)
+```
+
+All F-tests show significant improvements (p < 0.001), supporting M3 as the final model.
+
+# Final Model Results
+
+## Coefficients
+
+```{r}
+coef_table_m3 <- tidy(m3, conf.int = TRUE, conf.level = 0.95)
+coef_table_m3
+```
+
+# Diagnostics
+
+## Standard Diagnostic Plots
+
+```{r}
+#| fig-height: 8
+
+par(mfrow = c(2, 2))
+plot(m3)
+par(mfrow = c(1, 1))
+```
+
+
+
+Diagnostic plots indicate that the linear model assumptions are reasonably satisfied. Residuals are approximately normally distributed (Q–Q plot close to the reference line, with minor tail deviations). There is no strong evidence of heteroscedasticity (Breusch–Pagan test, p = 0.31), and the residual variance appears stable across fitted values. No influential observations are detected based on leverage and Cook’s distance.
+
+## Heteroscedasticity Test
+
+```{r}
+bptest(m3)
+```
+
+## Cook's Distance
+
+```{r}
+#| fig-height: 5
+
+cooks_d <- cooks.distance(m3)
+plot(cooks_d, type = "h", main = "Cook's distance", ylab = "Cook's D")
+abline(h = 4 / nrow(train), col = "red", lty = 2)
+```
+
+Cook’s distance values remain below the conventional 4/n threshold, indicating the absence of highly influential observations.
+
+## Residuals vs Predictors
+
+```{r}
+#| fig-height: 5
+
+resid_df <- train |>
+  mutate(
+    resid = resid(m3),
+    fitted = fitted(m3)
+  )
+
+# Residuals vs study_hrs
+ggplot(resid_df, aes(x = study_hrs, y = resid)) +
+  geom_point(shape = 21, size = 2, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Residuals vs Study hours", 
+       x = "Study hours per week", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+
+# Residuals vs attend_pct
+ggplot(resid_df, aes(x = attend_pct, y = resid)) +
+  geom_point(shape = 21, size = 2, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Residuals vs Attendance percentage", 
+       x = "Attendance percentage", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+
+# Residuals vs sleep_hrs
+ggplot(resid_df, aes(x = sleep_hrs, y = resid)) +
+  geom_point(shape = 21, size = 2, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Residuals vs Sleep hours", 
+       x = "Sleep hours per night", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+```
+
+Residuals are centered around zero and show no systematic trend, supporting the linearity assumption.
+
+## Residuals vs Omitted Variables
+
+```{r}
+#| fig-height: 5
+
+# Age
+ggplot(resid_df, aes(x = age, y = resid)) +
+  geom_point(shape = 21, size = 2, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Residuals vs Age (omitted variable)", 
+       x = "Age", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+
+# Travel time
+ggplot(resid_df, aes(x = trav_time, y = resid)) +
+  geom_boxplot(fill = "grey80") +
+  labs(title = "Residuals vs Travel time (omitted variable)", 
+       x = "Travel time", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+
+# Gender
+ggplot(resid_df, aes(x = sexe, y = resid)) +
+  geom_boxplot(fill = "grey80") +
+  labs(title = "Residuals vs Gender (omitted variable)", 
+       x = "Gender", 
+       y = "Residuals") +
+  theme_bw(base_size = 14)
+```
+
+
+Residuals are centered around zero with no clear trends or strong systematic patterns in omitted variables, supporting the linearity assumption.
+
+# Predictive Performance
+
+## Test Set Evaluation
+
+```{r}
+pred_m1 <- predict(m1, newdata = test)
+pred_m2 <- predict(m2, newdata = test)
+pred_m3 <- predict(m3, newdata = test)
+
+perf_metrics <- function(y_true, y_pred) {
+  mse <- mean((y_true - y_pred)^2)
+  medae <- median(abs(y_true - y_pred))
+  r2 <- 1 - sum((y_true - y_pred)^2) / sum((y_true - mean(y_true))^2)
+  c(mse = mse, medAE = medae, r2 = r2)
+}
+
+met_m1 <- perf_metrics(test$y, pred_m1)
+met_m2 <- perf_metrics(test$y, pred_m2)
+met_m3 <- perf_metrics(test$y, pred_m3)
+
+test_metrics <- rbind(
+  baseline_metrics,
+  data.frame(model = "m1_simple", mse = met_m1["mse"], medAE = met_m1["medAE"], r2 = met_m1["r2"]),
+  data.frame(model = "m2_core",   mse = met_m2["mse"], medAE = met_m2["medAE"], r2 = met_m2["r2"]),
+  data.frame(model = "m3_final",  mse = met_m3["mse"], medAE = met_m3["medAE"], r2 = met_m3["r2"])
+)
+
+row.names(test_metrics) <- NULL
+test_metrics
+```
+
+## Calibration Plot
+
+```{r}
+#| fig-height: 6
+
+cal_df <- data.frame(y_true = test$y, y_pred = pred_m3)
+
+ggplot(cal_df, aes(x = y_pred, y = y_true)) +
+  geom_point(alpha = 0.3, shape = 21, size = 2) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Calibration plot (test set)",
+       x = "Predicted exam score",
+       y = "Observed exam score") +
+  theme_bw(base_size = 14)
+```
+
+The model is well calibrated, with accurate predictions across the full range of exam scores.
+
+# Interpretation
+
+## Student Profiles
+
+```{r}
+profiles <- data.frame(
+  study_hrs = c(4, 8, 12),
+  attend_pct = c(60, 80, 95),
+  sleep_hrs = c(6, 7.5, 8),
+  parent_educ = factor(c(2, 4, 6), levels = levels(train$parent_educ), ordered = TRUE),
+  study_method = factor(c(3, 1, 6), levels = levels(train$study_method)),
+  sleep_qual = factor(c(1, 2, 3), levels = levels(train$sleep_qual), ordered = TRUE)
+)
+
+profiles
+```
+
+## Predicted Scores
+
+```{r}
+pred_profiles <- predict(m3, newdata = profiles, interval = "confidence", level = 0.95)
+profiles_pred <- cbind(profiles, pred_profiles)
+
+profiles_pred
+```
+
+
+# Conclusion
+
+The final model (m3) explains 70% of variance in exam scores with excellent test set performance (R² = 0.685), demonstrating strong predictive capability and reliable generalization.
+
+Model diagnostics confirm that linear regression assumptions are reasonably satisfied: residuals are approximately normally distributed, no influential outliers were detected (all Cook's D < 4/n), and formal testing shows no severe heteroscedasticity (Breusch-Pagan p = 0.31). The model demonstrates good calibration with accurate predictions across the full range of exam scores.
+
+## Key Findings
+
+**Most influential factors (ranked by impact):**
+
+1. **Attendance** (β = 0.51, p < 0.001): Strongest predictor. Each percentage point increase adds 0.51 points to exam score.
+
+2. **Study hours** (β = 2.16, p < 0.001): Each additional hour of weekly study adds approximately 2.2 points.
+
+3. **Sleep hours** (β = 2.34, p < 0.001): Each additional hour of nightly sleep adds approximately 2.3 points.
+
+Additional significant predictors include parental education, study method, and sleep quality (p < 0.05).
+
+
+## Practical Impact and Recommendations
+
+Student profiles demonstrate the cumulative effect of modifiable factors: students with optimal habits (12h study/week, 95% attendance, 8h sleep) score 83 points on average, while those with poor habits (4h study/week, 60% attendance, 6h sleep) score only 33 points—a **50-point difference**.
+
+**Individual factor contributions:**
+1. **Improve attendance** (highest impact): ~18 points gain from 60% to 95%
+2. **Increase study time**: ~9 points gain from 4 to 8 hours weekly  
+3. **Improve sleep**: ~5 points gain from 6 to 8 hours nightly
+
+## Model Quality and Limitations
+
+Approximately 30% of score variance remains unexplained, likely reflecting unmeasured factors such as student motivation, teaching quality, and individual learning aptitudes.
+
+Future work could explore interaction effects (e.g., study hours × attendance), incorporate additional psychological or contextual variables, or employ causal inference methods to strengthen interpretability.
+
+Overall, the final model achieves a strong balance between interpretability, predictive performance, and robustness, making it suitable for both explanatory analysis and practical recommendations.
+
+# AI Use Statement
+
+Claude AI (Anthropic) was used for R code assistance, specifically for refining visualizations (ggplot syntax and parameters), debugging, and report formatting. All statistical decisions, model selection, and interpretations are our own work based on course materials. All results were verified against R documentation and course examples.
